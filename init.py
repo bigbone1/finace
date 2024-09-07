@@ -1,0 +1,13 @@
+# debian 11
+
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+echo ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDI02KH9xPsekrm8mSkcFxypyReYyzGdUfFTH92q7cl/4kbRh92qFV//IKyfm0VPagNRWillog7vmtRR81t7+2G5SOwuSOeHiQk9fJWOizoFPOjfWmyfcNr1nrJMqO8DrJm3YwUrCJPb67TUJ5dOtE/bDNyEFZ5cF93VSURS/KhTUDKDyVPT00qfafDSloBtirRkpkDb/uQevkfLhZOU9kO2yrNMR1ifigYT+mC0XzdkjWenuZ0Q/bl/UMHwY6IPh45JBF6uQvpmc7mHq1jSR6Dk4mx2E/hEE27u092o0H5x7L+Hu3wzyI8lP4Mon+SQNrFFJAUHwphNlp+Ig4Ze9YVRdjJ9vSpdcE0RphoycTNVlNH2g5MxhuHYtyBliaXxh0RziMoM0yAlcaO/V8GaeQpMHLwANySGCNi/v/A5UVePuqRl2Y2a37j+bUNs9Q35dUTRRGuvtHFce5uuGoMf6Kba+U+iab47ZysfcZFs9oQZiLwiH4CeyF5E7tnZ4SjiqeMttMXSweK2GawM8fPkLrnPiv72V+I7byheS7TMWSOUXdDrOHPipgg44m0oKmnRUEy9Sob0tMcZmgTi22TB04ByY0K6zfRJORVq3jqPIKTEc0LABBMONHy3DuYZwcPRcFluYRGQpublW/M3YVISDkd8DCAfuAB87yadvXHSKXSpw== 11849175@mail.sustech.edu.cn
+ > /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+
+sudo apt-get update
+yes |sudo apt-get install git
+git clone -b master https://github.com/flyzy2005/ss-fly
+ss-fly/ss-fly.sh -i 123 54541
+ufw allow 54541
