@@ -21,3 +21,12 @@ class MyEngine():
 
     def read_sql_query(self, sql):
         return pd.read_sql_query(sql, con=self.engine)
+    
+    def create_sql(self, columns, table_name, start_date, end_date, codes=[]):
+        sql_cols = ', '.join(columns)
+        sql = f'select {sql_cols} from {table_name} \
+                    where date between "{start_date}" and "{end_date}"'
+        if len(codes) > 0:
+            sql_codes = ', '.join(codes)
+            sql = sql + f' and stock_code in ({sql_codes})'
+        return sql

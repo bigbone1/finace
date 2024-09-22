@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
+import numpy as np
 
 def predict(model, data_loader):
     model.eval()
@@ -16,22 +17,26 @@ def load_model(model, model_path):
     return model
 
 if __name__ == '__main__':
-    from models.model import TimeSeriesDataset, prepare_data, CNN_RNN
+    from models.cc_m_ml.model import TimeSeriesDataset, prepare_data, SimpleCNN
     import matplotlib.pyplot as plt
     import pandas as pd
 
-    data, labels = prepare_data('2023-07-01', '2024-05-31', target_code_num=100, train=False)
+    data, labels = prepare_data('2023-07-01', '2024-05-31', target_code_num=10, train=False)
     cols = data.columns.to_list()
     cols.remove('date')
     cols.remove('price_change_percentage_next_day')
-    dataset = TimeSeriesDataset(data[cols].values, labels.values, window=40, stride=1)
+    dataset = TimeSeriesDataset(data[cols].values, labels.values, window=5, stride=1)
     # 构建数据加载器
-    batch_size = 32
+    batch_size =128
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     # 加载模型的函数
-    model = CNN_RNN()
+    model = SimpleCNN()
     model = load_model(model, r'best_model.pth')
     data['predict'] = pd.Series(predict(model, data_loader))
+    data.dropna(inplace=True)
+    print('是否均为0：====================')
+    print(np.all(data['predict'].values==0))
+
     def func_(x):
         return (x['predict']==x['price_change_percentage_next_day']).sum() / x.shape[0] * 100
     res = data.groupby(['stock_code']).apply(lambda x: func_(x))

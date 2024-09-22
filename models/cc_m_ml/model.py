@@ -7,31 +7,27 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import sys
+
+from libs.dataset import balanced_dataset
 sys.path.append(r'D:\python\finace')
 from libs import MyEngine
 
-# Define the CNN+RNN model
-# class CNN_RNN(nn.Module):
-#     def __init__(self):
-#         super(CNN_RNN, self).__init__()
-#         self.conv1 = nn.Conv1d(16, 32, kernel_size=3)
-#         self.conv1_drop = nn.Dropout1d()  # 增加Dropout比例
-#         self.conv2 = nn.Conv1d(32, 32, kernel_size=3)
-#         self.batch_norm = nn.BatchNorm1d(32)  # 添加批量归一化层
-#         self.conv2_drop = nn.Dropout1d()  # 为第二个卷积层添加Dropout
-#         self.rnn = nn.GRU(32, 64, num_layers=1, batch_first=True)
-#         self.fc = nn.Linear(64, 1)
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv1d(16, 32, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool1d(2, 2)
+        self.fc1 = nn.Linear(32 * 2, 128)  # 假设卷积层输出尺寸为 (batch_size, 32, 80)
+        self.fc2 = nn.Linear(128, 1)  # 二分类问题
 
-#     def forward(self, x):
-#         x = nn.functional.relu(self.batch_norm(self.conv1(x)))  # 应用批量归一化
-#         x = nn.functional.relu(nn.functional.max_pool1d(self.conv1_drop(x), 2))
-#         x = self.batch_norm(self.conv2(x))  # 应用批量归一化
-#         x = nn.functional.relu(nn.functional.max_pool1d(self.conv2_drop(x), 2))
-#         x = x.view(-1, 8, 32)  # 确保这里的形状与max pooling的结果一致
-#         x, _ = self.rnn(x)
-#         x = self.fc(x[:, -1, :])
-#         x = torch.sigmoid(x)
-#         return x
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = x.view(x.size(0), -1)  # 展平卷积输出
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        # return x
+        return torch.sigmoid(x)
+    
 class CNN_RNN(nn.Module):
     def __init__(self):
         super(CNN_RNN, self).__init__()
@@ -120,19 +116,25 @@ def train(data, earnings, max_echos=50):
     """
     # 构建数据集
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    dataset = TimeSeriesDataset(data.values,  earnings.values, window=40, stride=1, device=device)
+    dataset = TimeSeriesDataset(data.values,  earnings.values, window=5, stride=1, device=device)
+    dataset = balanced_dataset(dataset)
+    
     # Split the dataset into training and testing set
     train_size = int(0.8 * len(dataset))
     test_size = len(dataset) - train_size
     train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
-
+  
     # Create data loaders for training and testing
     batch_size = 128
     train_data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_data_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+    # for batch in test_data_loader:
+    #     print(batch[0].shape)  # 假设 batch[0] 包含了数据，batch[1] 包含了标签（如果有的话）
+    #     break  # 只查看第一个批次的形状
+    # exit()
     # Initialize the model, optimizer, and loss function
-    model = CNN_RNN()
+    model = SimpleCNN()
     # 正确的初始化方法示例
     # nn.init.kaiming_uniform_(model.parameters())
     optimizer = optim.Adam(model.parameters(), lr=0.0001)
@@ -229,7 +231,7 @@ def prepare_data(start_date, end_date, target_code_num, train=True):
 
     inputs1.sort_values(by=['stock_code', 'date'], inplace=True)
     inputs1.loc[:, 'date_seconds'] = pd.to_datetime(inputs1['date']).astype('int64')//1e9
-    inputs1['price_change_percentage_next_day'] = inputs1['price_change_percentage'].apply(lambda x: 1 if x>2 else 0)
+    inputs1['price_change_percentage_next_day'] = inputs1['price_change_percentage'].apply(lambda x: 1 if x>5 else 0)
     # inputs1 = inputs1.groupby('stock_code').apply(lambda x: x['open_price']/x['open_price'].iloc[0])
     inputs1.dropna(inplace=True)
     # data1 = inputs1.drop(columns=['date'])
@@ -280,5 +282,5 @@ class FocalLoss(nn.Module):
 
 
 if __name__ == '__main__':
-    data, labels = prepare_data('2023-07-01', '2024-05-31', target_code_num=100, train=True)
-    train(data, labels, max_echos=1000)
+    data, labels = prepare_data('2023-07-01', '2024-05-31', target_code_num=1000, train=True)
+    train(data, labels, max_echos=10000)

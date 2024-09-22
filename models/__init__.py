@@ -1,2 +1,2 @@
-from .model import *
-from .model_infer import *
+from .cc_m_ml.model import *
+from .cc_m_ml.model_infer import *

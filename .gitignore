@@ -1,0 +1,8 @@
+.vscode
+*.png
+figs
+fig 
+*/__pycache__
+*.csv
+*.pyc
+.git
