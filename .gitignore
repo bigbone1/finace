@@ -2,7 +2,8 @@
 *.png
 figs
 fig 
-*/__pycache__
+*__pycache__*
+libs/__pycache__
 *.csv
 *.pyc
 .git

@@ -2,6 +2,13 @@ import pandas as pd
 from .mysql import MyEngine
 
 
+def code_convet(symbol, res_with_prefix=True):
+    if not res_with_prefix:
+        return int(symbol.split('.')[1])
+    else:
+        str_symbol = str(symbol).rjust(6, '0')
+        return ['sz.'+str_symbol, 'sh.'+str_symbol]
+    
 def convert_names(df: pd.DataFrame):
     sql3 = 'select * FROM name_map'
     name_df = MyEngine().read_sql_query(sql3)
