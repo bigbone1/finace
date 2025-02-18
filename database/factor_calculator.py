@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import akshare as ak
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
 import logging
 
@@ -40,25 +40,13 @@ class FullFactorCalculator:
     def update_valuation_factors(self, symbol):
         """更新估值因子数据"""
         try:
-            df_indicator = ak.stock_a_indicator_lg(symbol=symbol)
+            df_indicator = ak.stock_a_indicator_lg(symbol=symbol[2:])
             if df_indicator.empty:
                 logging.warning(f"No valuation data found for {symbol}")
                 return
-            
+            df_indicator['symbol'] = symbol
             df_indicator['trade_date'] = pd.to_datetime(df_indicator['trade_date'])
-            
-            df_spot = ak.stock_zh_a_spot_em()
-            df_spot['symbol'] = np.where(df_spot['代码'].str.startswith('6'), 
-                                        'sh' + df_spot['代码'], 
-                                        'sz' + df_spot['代码'])
-            total_mv = df_spot[df_spot['symbol'] == symbol]['总市值'].values
-            if len(total_mv) == 0:
-                logging.warning(f"No market value found for {symbol}")
-                return
-            
-            df_indicator['total_mv'] = total_mv[0]
-            df_indicator[['symbol', 'trade_date', 'pe', 'pb', 'ps', 
-                          'dividend_yield', 'total_mv']].to_sql(
+            df_indicator[['symbol', 'trade_date', 'pe', 'pe_ttm', 'pb', 'dv_ratio', 'dv_ttm', 'ps', 'ps_ttm', 'total_mv']].to_sql(
                 'valuation_factors', self.engine, if_exists='append', index=False)
         except Exception as e:
             logging.error(f"Valuation update failed for {symbol}: {str(e)}")
@@ -67,41 +55,93 @@ class FullFactorCalculator:
     def calculate_growth_factors(self, symbol):
         """计算成长因子"""
         try:
+            # 获取数据并检查空值
             income_df = ak.stock_financial_report_sina(stock=symbol, symbol="利润表")
-            cash_df = ak.stock_financial_report_sina(stock=symbol, symbol="现金流量表")
-            
-            if income_df is None or cash_df is None:
+            cash_df = income_df.copy()
+
+            if income_df.empty or cash_df.empty:
                 logging.warning(f"No financial report data found for {symbol}")
                 return
-            
-            net_profit = income_df[income_df['报表类型'] == '年报'][['公告日期', '净利润同比']]
+
+            # 按时间排序并清洗数据
+            income_df = income_df.sort_values("报告日").dropna(subset=["净利润", "营业收入"])
+            cash_df = cash_df.sort_values("报告日").dropna(subset=["研发费用"])
+
+            # 计算净利润同比增长率（修复分母为 None 的问题）-----------------------------
+            net_profit = income_df[["报告日", "净利润"]].copy()
+            if len(net_profit) < 5:  # 至少需要5个季度数据才能计算同比
+                logging.warning(f"{symbol} 净利润数据不足5个季度，无法计算同比增长率")
+                return
+
+            net_profit["net_profit_shift4"] = net_profit["净利润"].shift(4)
+            # 过滤掉 shift4 为空或零的行
+            net_profit = net_profit.dropna(subset=["net_profit_shift4"])
+            net_profit = net_profit[net_profit["net_profit_shift4"] != 0]
+
             if net_profit.empty:
-                logging.warning(f"No net profit data found for {symbol}")
+                logging.warning(f"{symbol} 净利润数据不足或去年同期数据无效")
                 return
-            
-            net_profit['net_profit_growth'] = net_profit['净利润同比'].str.replace('%', '').astype(float)
-            
-            revenue = income_df[income_df['报表类型'] == '年报'][['公告日期', '营业收入同比']]
+
+            # 安全计算增长率（避免除零和 None）
+            net_profit["net_profit_growth"] = (
+                (net_profit["净利润"] - net_profit["net_profit_shift4"]) 
+                / net_profit["net_profit_shift4"].abs() 
+                * 100
+            )
+
+            # 计算营业收入同比增长率（同理）------------------------------------------
+            revenue = income_df[["报告日", "营业收入"]].copy()
+            if len(revenue) < 5:
+                logging.warning(f"{symbol} 营业收入数据不足5个季度，无法计算同比增长率")
+                return
+
+            revenue["revenue_shift4"] = revenue["营业收入"].shift(4)
+            revenue = revenue.dropna(subset=["revenue_shift4"])
+            revenue = revenue[revenue["revenue_shift4"] != 0]
+
             if revenue.empty:
-                logging.warning(f"No revenue data found for {symbol}")
+                logging.warning(f"{symbol} 营业收入数据不足或去年同期数据无效")
                 return
-            
-            revenue['revenue_growth'] = revenue['营业收入同比'].str.replace('%', '').astype(float)
-            
-            rd_expense = cash_df[cash_df['报表类型'] == '年报'][['公告日期', '研发支付']]
+
+            revenue["revenue_growth"] = (
+                (revenue["营业收入"] - revenue["revenue_shift4"]) 
+                / revenue["revenue_shift4"].abs() 
+                * 100
+            )
+
+            # 计算研发费用环比增长率（修复分母为 None 的问题）-------------------------
+            rd_expense = cash_df[["报告日", "研发费用"]].copy()
+            if len(rd_expense) < 2:  # 至少需要2个季度计算环比
+                logging.warning(f"{symbol} 研发费用数据不足2个季度，无法计算环比增长率")
+                return
+
+            rd_expense["rd_expense_shift1"] = rd_expense["研发费用"].shift(1)
+            rd_expense = rd_expense.dropna(subset=["rd_expense_shift1"])
+            rd_expense = rd_expense[rd_expense["rd_expense_shift1"] != 0]
+
             if rd_expense.empty:
-                logging.warning(f"No RD expense data found for {symbol}")
+                logging.warning(f"{symbol} 研发费用数据不足或上季度数据无效")
                 return
-            
-            rd_expense['rd_expense'] = rd_expense['研发支付'].astype(float)
-            rd_expense['rd_expense_growth'] = rd_expense['rd_expense'].pct_change() * 100
-            
-            merged_df = pd.merge(net_profit, revenue, on='公告日期')
-            merged_df = pd.merge(merged_df, rd_expense, on='公告日期')
-            merged_df['symbol'] = symbol
-            merged_df[['symbol', '公告日期', 'net_profit_growth', 
-                      'revenue_growth', 'rd_expense_growth']].to_sql(
-                'growth_factors', self.engine, if_exists='append', index=False)
+
+            rd_expense["rd_expense_growth"] = (
+                (rd_expense["研发费用"] - rd_expense["rd_expense_shift1"]) 
+                / rd_expense["rd_expense_shift1"].abs() 
+                * 100
+            )
+
+            # 合并数据并保存结果（同之前代码）
+            merged_df = pd.merge(net_profit, revenue, on="报告日", how="inner")
+            merged_df = pd.merge(merged_df, rd_expense, on="报告日", how="inner")
+            merged_df["symbol"] = symbol
+            merged_df.rename(columns={"报告日": "announcement_date"}, inplace=True)
+
+            output_cols = ["symbol", "announcement_date", "net_profit_growth", "revenue_growth", "rd_expense_growth"]
+            merged_df[output_cols].to_sql(
+                "growth_factors", 
+                self.engine, 
+                if_exists="append", 
+                index=False
+            )
         except Exception as e:
             logging.error(f"Growth factor error for {symbol}: {str(e)}")
 
@@ -222,6 +262,24 @@ class FullFactorCalculator:
 
     def initialize_hist_data(self):
         """初始化全量历史数据"""
+        # 创建表
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS valuation_factors (
+            symbol VARCHAR(10), -- 证券代码
+            trade_date DATE, -- 交易日期
+            pe FLOAT, -- 市盈率
+            pe_ttm FLOAT, -- 市盈率（TTM）
+            pb FLOAT, -- 市净率
+            dv_ratio FLOAT, -- 股息率
+            dv_ttm FLOAT, -- 股息率（TTM）
+            ps FLOAT, -- 市销率
+            ps_ttm FLOAT, -- 市销率（TTM）
+            total_mv FLOAT -- 总市值
+        );
+        """
+        with self.engine.connect() as connection:
+            connection.execute(text(create_table_sql))
+        
         stocks = self.get_all_stocks()
         
         for symbol in stocks:

@@ -1,17 +1,18 @@
-为了提高查询性能，可以在表中添加适当的索引。以下是为每个表添加索引后的建表语句：
-
 ### 1. `valuation_factors`
 存储估值因子数据。
 
 ```sql
 CREATE TABLE valuation_factors (
-    symbol VARCHAR(10) NOT NULL,
-    trade_date DATE NOT NULL,
-    pe FLOAT,
-    pb FLOAT,
-    ps FLOAT,
-    dividend_yield FLOAT,
-    total_mv FLOAT,
+    symbol VARCHAR(10) NOT NULL, -- 股票代码
+    trade_date DATE NOT NULL, -- 交易日期
+    pe FLOAT, -- 市盈率（PE）
+    pe_ttm FLOAT, -- 滚动市盈率（PE_TTM）
+    pb FLOAT, -- 市净率（PB）
+    dv_ratio FLOAT, -- 股息率
+    dv_ttm FLOAT, -- 滚动股息率
+    ps FLOAT, -- 市销率（PS）
+    ps_ttm FLOAT, -- 滚动市销率
+    total_mv FLOAT, -- 总市值
     PRIMARY KEY (symbol, trade_date),
     INDEX idx_symbol (symbol),
     INDEX idx_trade_date (trade_date)
@@ -23,11 +24,11 @@ CREATE TABLE valuation_factors (
 
 ```sql
 CREATE TABLE growth_factors (
-    symbol VARCHAR(10) NOT NULL,
-    announcement_date DATE NOT NULL,
-    net_profit_growth FLOAT,
-    revenue_growth FLOAT,
-    rd_expense_growth FLOAT,
+    symbol VARCHAR(10) NOT NULL, -- 股票代码
+    announcement_date DATE NOT NULL, -- 公告日期
+    net_profit_growth FLOAT, -- 净利润增长率
+    revenue_growth FLOAT, -- 营业收入增长率
+    rd_expense_growth FLOAT, -- 研发费用增长率
     PRIMARY KEY (symbol, announcement_date),
     INDEX idx_symbol (symbol),
     INDEX idx_announcement_date (announcement_date)
@@ -39,12 +40,12 @@ CREATE TABLE growth_factors (
 
 ```sql
 CREATE TABLE volatility_factors (
-    symbol VARCHAR(10) NOT NULL,
-    trade_date DATE NOT NULL,
-    hist_volatility_30d FLOAT,
-    hist_volatility_5d FLOAT,
-    beta_252d FLOAT,
-    atr_14d FLOAT,
+    symbol VARCHAR(10) NOT NULL, -- 股票代码
+    trade_date DATE NOT NULL, -- 交易日期
+    hist_volatility_30d FLOAT, -- 30日历史波动率
+    hist_volatility_5d FLOAT, -- 5日历史波动率
+    beta_252d FLOAT, -- 252日贝塔值
+    atr_14d FLOAT, -- 14日平均真实波幅（ATR）
     PRIMARY KEY (symbol, trade_date),
     INDEX idx_symbol (symbol),
     INDEX idx_trade_date (trade_date)
@@ -56,11 +57,11 @@ CREATE TABLE volatility_factors (
 
 ```sql
 CREATE TABLE quality_factors (
-    symbol VARCHAR(10) NOT NULL,
-    announcement_date DATE NOT NULL,
-    debt_to_asset FLOAT,
-    cash_flow_ratio FLOAT,
-    accruals_ratio FLOAT,
+    symbol VARCHAR(10) NOT NULL, -- 股票代码
+    announcement_date DATE NOT NULL, -- 公告日期
+    debt_to_asset FLOAT, -- 资产负债率
+    cash_flow_ratio FLOAT, -- 现金流比率
+    accruals_ratio FLOAT, -- 应计比率
     PRIMARY KEY (symbol, announcement_date),
     INDEX idx_symbol (symbol),
     INDEX idx_announcement_date (announcement_date)
@@ -72,12 +73,12 @@ CREATE TABLE quality_factors (
 
 ```sql
 CREATE TABLE technical_indicators (
-    symbol VARCHAR(10) NOT NULL,
-    date DATE NOT NULL,
-    ma_5 FLOAT,
-    ma_20 FLOAT,
-    macd FLOAT,
-    kdj_k FLOAT,
+    symbol VARCHAR(10) NOT NULL, -- 股票代码
+    date DATE NOT NULL, -- 日期
+    ma_5 FLOAT, -- 5日移动平均线
+    ma_20 FLOAT, -- 20日移动平均线
+    macd FLOAT, -- MACD指标
+    kdj_k FLOAT, -- KDJ指标中的K值
     PRIMARY KEY (symbol, date),
     INDEX idx_symbol (symbol),
     INDEX idx_date (date)
@@ -89,9 +90,9 @@ CREATE TABLE technical_indicators (
 
 ```sql
 CREATE TABLE macro_data (
-    date DATE NOT NULL,
-    value FLOAT,
-    indicator VARCHAR(10) NOT NULL,
+    date DATE NOT NULL, -- 日期
+    value FLOAT, -- 数据值
+    indicator VARCHAR(10) NOT NULL, -- 指标名称
     PRIMARY KEY (date, indicator),
     INDEX idx_date (date),
     INDEX idx_indicator (indicator)
@@ -103,14 +104,14 @@ CREATE TABLE macro_data (
 
 ```sql
 CREATE TABLE margin_data (
-    date DATE NOT NULL,
-    market VARCHAR(10) NOT NULL,
-    margin_balance FLOAT,
-    margin_purchase FLOAT,
-    repayment_of_margin FLOAT,
-    short_balance FLOAT,
-    short_sale FLOAT,
-    repayment_of_short FLOAT,
+    date DATE NOT NULL, -- 日期
+    market VARCHAR(10) NOT NULL, -- 市场（如沪市、深市）
+    margin_balance FLOAT, -- 融资余额
+    margin_purchase FLOAT, -- 融资买入额
+    repayment_of_margin FLOAT, -- 融资偿还额
+    short_balance FLOAT, -- 融券余额
+    short_sale FLOAT, -- 融券卖出量
+    repayment_of_short FLOAT, -- 融券偿还量
     PRIMARY KEY (date, market),
     INDEX idx_date (date),
     INDEX idx_market (market)
