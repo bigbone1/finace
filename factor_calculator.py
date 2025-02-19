@@ -102,3 +102,75 @@ class FullFactorCalculator:
         
         self._init_macro_data()
         self._init_margin_data()
+
+    def calculate_rsi(self, df, window=14):
+        """计算相对强弱指数（RSI）"""
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
+    def calculate_obv(self, df):
+        """计算累积/派发量（OBV）"""
+        df['direction'] = np.where(df['close'] > df['close'].shift(1), 1, -1)
+        df['volume_signed'] = df['direction'] * df['volume']
+        obv = df['volume_signed'].cumsum()
+        return obv
+
+    def calculate_vwap(self, df):
+        """计算成交量加权平均价格（VWAP）"""
+        df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+        return df['vwap']
+
+    def calculate_cci(self, df, window=20):
+        """计算商品通道指数（CCI）"""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        moving_average = typical_price.rolling(window=window).mean()
+        mean_deviation = typical_price.rolling(window=window).apply(lambda x: np.std(x - moving_average.iloc[x.index.get_loc(x.name)]), raw=False)
+        cci = (typical_price - moving_average) / (0.015 * mean_deviation)
+        return cci
+
+    def calculate_bollinger_bands(self, df, window=20):
+        """计算布林带（Bollinger Bands）"""
+        moving_average = df['close'].rolling(window=window).mean()
+        std_dev = df['close'].rolling(window=window).std()
+        upper_band = moving_average + (2 * std_dev)
+        lower_band = moving_average - (2 * std_dev)
+        return moving_average, upper_band, lower_band
+
+    def calculate_technical_indicators(self, symbol):
+        """计算技术指标"""
+        try:
+            df = self.get_hist_data(symbol)
+            if df is None or 'date' not in df.columns:
+                logging.warning(f"No historical data or missing 'date' column for {symbol}")
+                return
+            
+            df['ma_5'] = df['close'].rolling(5).mean()
+            df['ma_20'] = df['close'].rolling(20).mean()
+            
+            exp12 = df['close'].ewm(span=12, adjust=False).mean()
+            exp26 = df['close'].ewm(span=26, adjust=False).mean()
+            macd_line = exp12 - exp26
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            df['macd'] = macd_line - signal_line
+            
+            low_min = df['low'].rolling(9).min()
+            high_max = df['high'].rolling(9).max()
+            rsv = (df['close'] - low_min) / (high_max - low_min) * 100
+            df['kdj_k'] = rsv.ewm(com=2).mean()
+            
+            # 新增技术指标计算
+            df['rsi'] = self.calculate_rsi(df)
+            df['obv'] = self.calculate_obv(df)
+            df['vwap'] = self.calculate_vwap(df)
+            df['cci'] = self.calculate_cci(df)
+            df['bollinger_mavg'], df['bollinger_upper'], df['bollinger_lower'] = self.calculate_bollinger_bands(df)
+            
+            df['symbol'] = symbol
+            df[['symbol', 'date', 'ma_5', 'ma_20', 'macd', 'kdj_k', 'rsi', 'obv', 'vwap', 'cci', 'bollinger_mavg', 'bollinger_upper', 'bollinger_lower']].to_sql(
+                'stock_zh_a_hist', self.engine, if_exists='append', index=False)
+        except Exception as e:
+            logging.error(f"Technical indicator error for {symbol}: {str(e)}")

@@ -19,23 +19,90 @@ class FullFactorCalculator:
         self.engine = create_engine(db_url)
         self.index_symbol = 'sh000001'  # 上证指数作为市场基准
         
+    def clear(self):
+        # 清除全部表的数据
+        with self.engine.connect() as conn:
+            conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
+            conn.execute(text("TRUNCATE TABLE valuation_factors"))
+            conn.execute(text("TRUNCATE TABLE growth_factors"))
+            conn.execute(text("TRUNCATE TABLE quality_factors"))   
+            conn.execute(text("TRUNCATE TABLE stock_zh_a_hist")) 
+            conn.execute(text("TRUNCATE TABLE macro_data")) 
+            conn.execute(text("TRUNCATE TABLE margin_data")) 
+            conn.execute(text("TRUNCATE TABLE sector_indices"))  # 新增：清空行业指数表
+
     # 辅助方法 --------------------------------------------------
     def get_all_stocks(self):
         """获取全A股代码列表（带交易所前缀）"""
         spot_df = ak.stock_zh_a_spot_em()
-        spot_df['symbol'] = np.where(spot_df['代码'].str.startswith('6'), 
-                                   'sh' + spot_df['代码'], 
-                                   'sz' + spot_df['代码'])
+        
+        # 添加对空值或异常值的检查
+        if spot_df is None or spot_df.empty:
+            logging.error("Failed to fetch stock data from akshare")
+            return []
+
+        # 清洗数据，去除无效行
+        spot_df = spot_df.dropna(subset=['代码'])
+
+        # 处理不同类型的股票代码
+        def format_symbol(code):
+            if isinstance(code, str) and len(code) == 6:
+                if code.startswith('6'):
+                    return f'sh{code}'
+                elif code.startswith(('0', '3')):
+                    return f'sz{code}'
+                elif code.startswith(('8', '4')):  # 北交所代码
+                    return f'bj{code}'
+                else:
+                    logging.warning(f"Unknown symbol format: {code}")
+                    return f'unknown_{code}'
+            else:
+                logging.warning(f"Invalid code format: {code}")
+                return f'invalid_{code}'
+
+        spot_df['symbol'] = spot_df['代码'].apply(format_symbol)
         return spot_df['symbol'].tolist()
 
-    def get_hist_data(self, symbol):
+    def get_hist_data(self, symbol, type='stock'):
         """获取复权历史行情"""
-        try:
-            return ak.stock_zh_a_daily(symbol=symbol, adjust="hfq")
+        try: 
+            if type != 'stock':
+                return ak.stock_zh_index_daily(symbol)
+            else:
+                return ak.stock_zh_a_hist(symbol=symbol[2:], adjust="qfq")
         except Exception as e:
             logging.error(f"Failed to get historical data for {symbol}: {e}")
             return None
-    
+
+    # 新增：获取行业指数数据
+    def get_sector_indices(self):
+        """获取行业指数数据"""
+        try:
+            sector_indices = ak.stock_sector_summary()
+            sector_indices['trade_date'] = pd.to_datetime(sector_indices['日期'])
+            sector_indices.rename(columns={'代码': 'index_code', '名称': 'name', '最新价': 'close', '涨跌幅': 'change_rate'}, inplace=True)
+            sector_indices['open'] = np.nan  # 行业指数数据中可能没有开盘价
+            sector_indices['high'] = np.nan  # 行业指数数据中可能没有最高价
+            sector_indices['low'] = np.nan  # 行业指数数据中可能没有最低价
+            sector_indices['volume'] = np.nan  # 行业指数数据中可能没有成交量
+            sector_indices['turnover'] = np.nan  # 行业指数数据中可能没有成交额
+            return sector_indices[['index_code', 'trade_date', 'open', 'close', 'high', 'low', 'volume', 'turnover']]
+        except Exception as e:
+            logging.error(f"Failed to get sector indices data: {e}")
+            return None
+
+    # 新增：更新行业指数数据
+    def update_sector_indices(self):
+        """更新行业指数数据"""
+        try:
+            sector_indices_df = self.get_sector_indices()
+            if sector_indices_df is None or sector_indices_df.empty:
+                logging.warning("No sector indices data found")
+                return
+            sector_indices_df.to_sql('sector_indices', self.engine, if_exists='append', index=False)
+        except Exception as e:
+            logging.error(f"Sector indices update failed: {str(e)}")
+
     # 估值因子 --------------------------------------------------
     def update_valuation_factors(self, symbol):
         """更新估值因子数据"""
@@ -150,14 +217,20 @@ class FullFactorCalculator:
         """计算波动率相关因子"""
         try:
             stock_data = self.get_hist_data(symbol)
-            index_data = self.get_hist_data(self.index_symbol)
-            
+            index_data = self.get_hist_data(self.index_symbol, type='index')
+            stock_data.rename(columns={'日期': 'date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高':'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'turnover', 
+                    '振幅': 'amplitude',
+                    '涨跌幅': 'price_change_percentage',
+                    '涨跌额': 'price_change_amount',
+                    '换手率': 'turnover_rate'}, inplace=True)
             if stock_data is None or index_data is None:
                 logging.warning(f"No historical data found for {symbol} or index")
-                return
-            
-            if 'date' not in stock_data.columns or 'date' not in index_data.columns:
-                logging.warning(f"Missing 'date' column in historical data for {symbol} or index")
                 return
             
             stock_data['log_return'] = np.log(stock_data['close'] / stock_data['close'].shift(1))
@@ -186,12 +259,12 @@ class FullFactorCalculator:
                 'beta_252d': beta.values,
                 'atr_14d': atr
             })
-            result_df['symbol'] = symbol
-            result_df[['symbol', 'trade_date', 'hist_volatility_30d', 'hist_volatility_5d',
-                      'beta_252d', 'atr_14d']].to_sql(
-                'volatility_factors', self.engine, if_exists='append', index=False)
+            return result_df[['trade_date', 'hist_volatility_30d', 'hist_volatility_5d',
+                      'beta_252d', 'atr_14d']]
+            
         except Exception as e:
-            logging.error(f"Volatility calculation error for {symbol}: {str(e)}")
+            logging.error(f"stock_zh_a_hist error for {symbol}: {str(e)}")
+            return None
 
     # 质量因子 --------------------------------------------------
     def calculate_quality_factors(self, symbol):
@@ -205,41 +278,88 @@ class FullFactorCalculator:
                 logging.warning(f"No financial report data found for {symbol}")
                 return
             
-            debt_ratio = balance_df[balance_df['报表类型'] == '年报'][['公告日期', '负债率']]
+            debt_ratio = balance_df[['报告日', '负债合计', '资产总计']]
             if debt_ratio.empty:
                 logging.warning(f"No debt ratio data found for {symbol}")
                 return
+            debt_ratio.loc[:, 'debt_to_asset'] = (debt_ratio['负债合计'] / debt_ratio['资产总计']) * 100
             
-            debt_ratio['debt_to_asset'] = debt_ratio['负债率'].str.replace('%', '').astype(float)
-            
-            cash_flow = cash_df[cash_df['报表类型'] == '年报'][['公告日期', '经营活动现金流净额']]
-            net_profit = income_df[income_df['报表类型'] == '年报'][['公告日期', '净利润']]
-            merged = pd.merge(cash_flow, net_profit, on='公告日期')
-            merged['cash_flow_ratio'] = merged['经营活动现金流净额'].astype(float) / \
-                                      merged['净利润'].astype(float)
+            cash_flow = cash_df[['报告日', '经营活动产生的现金流量净额']]
+            net_profit = income_df[['报告日', '净利润']]
+            merged = pd.merge(cash_flow, net_profit, on='报告日')
+            merged['cash_flow_ratio'] = merged['经营活动产生的现金流量净额'].astype(float) / merged['净利润'].astype(float)
             
             merged['accruals'] = merged['净利润'].astype(float) - \
-                               merged['经营活动现金流净额'].astype(float)
+                               merged['经营活动产生的现金流量净额'].astype(float)
             merged['accruals_ratio'] = merged['accruals'] / \
                                      merged['净利润'].astype(float)
             
-            final_df = pd.merge(debt_ratio, merged, on='公告日期')
+            final_df = pd.merge(debt_ratio, merged, on='报告日')
             final_df['symbol'] = symbol
-            final_df[['symbol', '公告日期', 'debt_to_asset', 
+            final_df.rename(columns={'报告日': 'announcement_date'}, inplace=True)
+            final_df[['symbol', 'announcement_date', 'debt_to_asset', 
                      'cash_flow_ratio', 'accruals_ratio']].to_sql(
                 'quality_factors', self.engine, if_exists='append', index=False)
         except Exception as e:
             logging.error(f"Quality factor error for {symbol}: {str(e)}")
+    
+    def calculate_rsi(self, df, window=14):
+        """计算相对强弱指数（RSI）"""
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
 
-    # 技术指标 --------------------------------------------------
+    def calculate_obv(self, df):
+        """计算累积/派发量（OBV）"""
+        df['direction'] = np.where(df['close'] > df['close'].shift(1), 1, -1)
+        df['volume_signed'] = df['direction'] * df['volume']
+        obv = df['volume_signed'].cumsum()
+        return obv
+
+    def calculate_vwap(self, df):
+        """计算成交量加权平均价格（VWAP）"""
+        df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+        return df['vwap']
+
+    def calculate_cci(self, df, window=20):
+        """计算商品通道指数（CCI）"""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        moving_average = typical_price.rolling(window=window).mean()
+        def custom_std(x):
+            return np.std(x - x.mean())
+        mean_deviation = typical_price.rolling(window=window).apply(custom_std, raw=False)
+        cci = (typical_price - moving_average) / (0.015 * mean_deviation)
+        return cci
+
+    def calculate_bollinger_bands(self, df, window=20):
+        """计算布林带（Bollinger Bands）"""
+        moving_average = df['close'].rolling(window=window).mean()
+        std_dev = df['close'].rolling(window=window).std()
+        upper_band = moving_average + (2 * std_dev)
+        lower_band = moving_average - (2 * std_dev)
+        return moving_average, upper_band, lower_band
+
     def calculate_technical_indicators(self, symbol):
         """计算技术指标"""
         try:
             df = self.get_hist_data(symbol)
-            if df is None or 'date' not in df.columns:
-                logging.warning(f"No historical data or missing 'date' column for {symbol}")
+            if df is None:
+                logging.warning(f"No historical data for {symbol}")
                 return
-            
+            df.rename(columns={'日期': 'trade_date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高':'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'turnover', 
+                    '振幅': 'amplitude',
+                    '涨跌幅': 'price_change_percentage',
+                    '涨跌额': 'price_change_amount',
+                    '换手率': 'turnover_rate'}, inplace=True)
             df['ma_5'] = df['close'].rolling(5).mean()
             df['ma_20'] = df['close'].rolling(20).mean()
             
@@ -254,31 +374,34 @@ class FullFactorCalculator:
             rsv = (df['close'] - low_min) / (high_max - low_min) * 100
             df['kdj_k'] = rsv.ewm(com=2).mean()
             
+            # 新增技术指标计算
+            df['rsi'] = self.calculate_rsi(df)
+            df['obv'] = self.calculate_obv(df)
+            df['vwap'] = self.calculate_vwap(df)
+            df['cci'] = self.calculate_cci(df)
+            df['bollinger_mavg'], df['bollinger_upper'], df['bollinger_lower'] = self.calculate_bollinger_bands(df)
+            
             df['symbol'] = symbol
-            df[['symbol', 'date', 'ma_5', 'ma_20', 'macd', 'kdj_k']].to_sql(
-                'technical_indicators', self.engine, if_exists='append', index=False)
+            cols = ['symbol', 'trade_date', 'open', 'close', 'high', 'low', 'volume', 
+                'turnover', 'amplitude', 'price_change_percentage', 'price_change_amount', 'turnover_rate',
+                'ma_5', 'ma_20', 'macd', 'kdj_k', 'rsi', 'obv', 'vwap', 
+                'cci', 'bollinger_mavg', 'bollinger_upper', 'bollinger_lower']
+            
+            volatility = self.calculate_volatility(symbol)
+            volatility_cols = ['hist_volatility_30d', 'hist_volatility_5d',
+                      'beta_252d', 'atr_14d']
+            if volatility is not None:
+                df = pd.merge(df, volatility, on='trade_date', how='outer')
+            else:
+                df[volatility_cols] = np.nan
+            cols += volatility_cols
+            df[cols].to_sql('stock_zh_a_hist', self.engine, if_exists='append', index=False)
         except Exception as e:
             logging.error(f"Technical indicator error for {symbol}: {str(e)}")
 
     def initialize_hist_data(self):
         """初始化全量历史数据"""
-        # 创建表
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS valuation_factors (
-            symbol VARCHAR(10), -- 证券代码
-            trade_date DATE, -- 交易日期
-            pe FLOAT, -- 市盈率
-            pe_ttm FLOAT, -- 市盈率（TTM）
-            pb FLOAT, -- 市净率
-            dv_ratio FLOAT, -- 股息率
-            dv_ttm FLOAT, -- 股息率（TTM）
-            ps FLOAT, -- 市销率
-            ps_ttm FLOAT, -- 市销率（TTM）
-            total_mv FLOAT -- 总市值
-        );
-        """
-        with self.engine.connect() as connection:
-            connection.execute(text(create_table_sql))
+        self.clear()
         
         stocks = self.get_all_stocks()
         
@@ -286,8 +409,9 @@ class FullFactorCalculator:
             self._init_single_stock(symbol)
             break
         
-        self._init_macro_data()
+        # self._init_macro_data()
         self._init_margin_data()
+        self.update_sector_indices()  # 新增：初始化行业指数数据
 
     def _init_single_stock(self, symbol):
         """单只股票历史数据初始化"""
@@ -295,7 +419,6 @@ class FullFactorCalculator:
         try:
             self.update_valuation_factors(symbol)
             self.calculate_growth_factors(symbol)
-            self.calculate_volatility(symbol)
             self.calculate_quality_factors(symbol)
             self.calculate_technical_indicators(symbol)
         except Exception as e:
@@ -320,7 +443,7 @@ class FullFactorCalculator:
         start_date = (datetime.now() - timedelta(days=3*365)).strftime('%Y%m%d')
         
         sse_df = ak.stock_margin_sse(start_date=start_date)
-        szse_df = ak.stock_margin_szse(start_date=start_date)
+        szse_df = ak.stock_margin_szse(date=start_date)
         
         margin_df = pd.concat([sse_df, szse_df])
         margin_df.to_sql('margin_data', self.engine, if_exists='append', index=False)

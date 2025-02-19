@@ -1,7 +1,5 @@
 ### 1. `valuation_factors`
 存储估值因子数据。
-
-```sql
 CREATE TABLE valuation_factors (
     symbol VARCHAR(10) NOT NULL, -- 股票代码
     trade_date DATE NOT NULL, -- 交易日期
@@ -17,12 +15,9 @@ CREATE TABLE valuation_factors (
     INDEX idx_symbol (symbol),
     INDEX idx_trade_date (trade_date)
 );
-```
 
 ### 2. `growth_factors`
 存储成长因子数据。
-
-```sql
 CREATE TABLE growth_factors (
     symbol VARCHAR(10) NOT NULL, -- 股票代码
     announcement_date DATE NOT NULL, -- 公告日期
@@ -33,29 +28,42 @@ CREATE TABLE growth_factors (
     INDEX idx_symbol (symbol),
     INDEX idx_announcement_date (announcement_date)
 );
-```
 
-### 3. `volatility_factors`
-存储波动率因子数据。
-
-```sql
-CREATE TABLE volatility_factors (
+### 3. `stock_zh_a_hist`    存储波动率因子数据。存储技术指标数据。
+CREATE TABLE stock_zh_a_hist (
     symbol VARCHAR(10) NOT NULL, -- 股票代码
     trade_date DATE NOT NULL, -- 交易日期
+    open FLOAT, -- 开盘价
+    close FLOAT, -- 收盘价
+    high FLOAT, -- 最高价
+    low FLOAT, -- 最低价
+    volume FLOAT, -- 成交量
+    turnover FLOAT, -- 成交额
+    amplitude FLOAT, -- 振幅
+    price_change_percentage FLOAT, -- 涨跌幅
+    price_change_amount FLOAT, -- 涨跌额
+    turnover_rate FLOAT, -- 换手率
     hist_volatility_30d FLOAT, -- 30日历史波动率
     hist_volatility_5d FLOAT, -- 5日历史波动率
     beta_252d FLOAT, -- 252日贝塔值
     atr_14d FLOAT, -- 14日平均真实波幅（ATR）
+    ma_5 FLOAT, -- 5日移动平均线
+    ma_20 FLOAT, -- 20日移动平均线
+    macd FLOAT, -- MACD指标
+    kdj_k FLOAT, -- KDJ指标中的K值
+    rsi FLOAT,
+    obv FLOAT,
+    vwap FLOAT,
+    cci FLOAT,
+    bollinger_mavg FLOAT,
+    bollinger_upper FLOAT,
+    bollinger_lower FLOAT,
     PRIMARY KEY (symbol, trade_date),
     INDEX idx_symbol (symbol),
     INDEX idx_trade_date (trade_date)
 );
-```
-
+ 'cci', 'bollinger_mavg', 'bollinger_upper', 'bollinger_lower']
 ### 4. `quality_factors`
-存储质量因子数据。
-
-```sql
 CREATE TABLE quality_factors (
     symbol VARCHAR(10) NOT NULL, -- 股票代码
     announcement_date DATE NOT NULL, -- 公告日期
@@ -66,29 +74,12 @@ CREATE TABLE quality_factors (
     INDEX idx_symbol (symbol),
     INDEX idx_announcement_date (announcement_date)
 );
-```
 
-### 5. `technical_indicators`
-存储技术指标数据。
-
-```sql
-CREATE TABLE technical_indicators (
-    symbol VARCHAR(10) NOT NULL, -- 股票代码
-    date DATE NOT NULL, -- 日期
-    ma_5 FLOAT, -- 5日移动平均线
-    ma_20 FLOAT, -- 20日移动平均线
-    macd FLOAT, -- MACD指标
-    kdj_k FLOAT, -- KDJ指标中的K值
-    PRIMARY KEY (symbol, date),
-    INDEX idx_symbol (symbol),
-    INDEX idx_date (date)
-);
-```
+### 5. `market_indices`
+存储市场指数数据。
 
 ### 6. `macro_data`
 存储宏观经济数据。
-
-```sql
 CREATE TABLE macro_data (
     date DATE NOT NULL, -- 日期
     value FLOAT, -- 数据值
@@ -97,12 +88,9 @@ CREATE TABLE macro_data (
     INDEX idx_date (date),
     INDEX idx_indicator (indicator)
 );
-```
 
 ### 7. `margin_data`
 存储融资融券历史数据。
-
-```sql
 CREATE TABLE margin_data (
     date DATE NOT NULL, -- 日期
     market VARCHAR(10) NOT NULL, -- 市场（如沪市、深市）
@@ -116,14 +104,18 @@ CREATE TABLE margin_data (
     INDEX idx_date (date),
     INDEX idx_market (market)
 );
-```
 
-### 解释
-- **`PRIMARY KEY`**: 每个表都有一个主键，用于唯一标识每一条记录。
-- **`INDEX`**: 为常用的查询字段添加索引，以提高查询性能。
-  - `symbol` 和 `trade_date` 在多个表中被频繁查询，因此添加了索引。
-  - `announcement_date` 在 `growth_factors` 和 `quality_factors` 表中被频繁查询，因此添加了索引。
-  - `date` 在 `technical_indicators` 表中被频繁查询，因此添加了索引。
-  - `indicator` 和 `market` 在 `macro_data` 和 `margin_data` 表中被频繁查询，因此添加了索引。
-
-通过添加这些索引，可以显著提高对这些表的查询效率。
+### 行业指数数据。
+CREATE TABLE sector_indices (
+    index_code VARCHAR(10) NOT NULL, -- 指数代码
+    trade_date DATE NOT NULL, -- 交易日期
+    open FLOAT, -- 开盘价
+    close FLOAT, -- 收盘价
+    high FLOAT, -- 最高价
+    low FLOAT, -- 最低价
+    volume FLOAT, -- 成交量
+    turnover FLOAT, -- 成交额
+    PRIMARY KEY (index_code, trade_date),
+    INDEX idx_index_code (index_code),
+    INDEX idx_trade_date (trade_date)
+);
