@@ -208,7 +208,7 @@ def optimize_strategy(data_dict, param_grid):
             best_params = result.params._getkwargs()
     return best_params, best_sharpe
 
-# ======================== 主程序执行 ========================
+
 if __name__ == '__main__':
     # 1. 生成示例数据（10只股票）
     symbols = [f'Stock_{i}' for i in range(1, 11)]

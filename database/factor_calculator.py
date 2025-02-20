@@ -5,6 +5,7 @@ import numpy as np
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
 import logging
+import time 
 
 # 设置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,7 +19,43 @@ class FullFactorCalculator:
         db_url = f'mysql+pymysql://{username}:{password}@{host}/{database}'
         self.engine = create_engine(db_url)
         self.index_symbol = 'sh000001'  # 上证指数作为市场基准
+        self.index_data = self.get_hist_data(self.index_symbol, type='index')
         
+    def daily_update(self, start_date=pd.to_datetime("today").date()):
+        """每日更新所有股票的最近数据"""
+        logging.info("Starting daily update of stock factors")
+        stocks = self.get_all_stocks()
+        self.daily_start_date = start_date
+
+        for symbol in stocks:
+            if 'unknown' in symbol:
+                continue
+            try:
+                # 获取最近的历史数据, 为保证beta252天数据完整性
+                start_date = start_date - pd.DateOffset(months=13)
+                self.symbol_hist_data = self.get_hist_data(symbol, start_date)
+                if self.symbol_hist_data is None or self.symbol_hist_data.empty:
+                    logging.warning(f"No historical data found for {symbol}")
+                    continue
+
+                # 仅处理最近的数据
+                latest_data = self.symbol_hist_data.iloc[-1:]
+
+                # 更新估值因子
+                self.update_valuation_factors(symbol)
+
+                # 计算技术指标
+                self.calculate_technical_indicators(symbol)
+
+                # TODO: 迁移质量因子-成长因子到对应的更新周期函数
+                # 计算成长因子
+                # self.calculate_growth_factors(symbol)
+
+                # 计算质量因子
+                # self.calculate_quality_factors(symbol)
+            except Exception as e:
+                logging.error(f"Daily update failed for {symbol}: {str(e)}")
+        logging.info("Daily update completed")
     def clear(self):
         # 清除全部表的数据
         with self.engine.connect() as conn:
@@ -63,13 +100,13 @@ class FullFactorCalculator:
         spot_df['symbol'] = spot_df['代码'].apply(format_symbol)
         return spot_df['symbol'].tolist()
 
-    def get_hist_data(self, symbol, type='stock'):
+    def get_hist_data(self, symbol, start_date=None, type='stock'):
         """获取复权历史行情"""
         try: 
             if type != 'stock':
                 return ak.stock_zh_index_daily(symbol)
             else:
-                return ak.stock_zh_a_hist(symbol=symbol[2:], adjust="qfq")
+                return ak.stock_zh_a_hist(symbol=symbol[2:], adjust="qfq", start_date=start_date)
         except Exception as e:
             logging.error(f"Failed to get historical data for {symbol}: {e}")
             return None
@@ -104,13 +141,21 @@ class FullFactorCalculator:
             logging.error(f"Sector indices update failed: {str(e)}")
 
     # 估值因子 --------------------------------------------------
-    def update_valuation_factors(self, symbol):
+    def update_valuation_factors(self, symbol, update_type='all'):
         """更新估值因子数据"""
         try:
             df_indicator = ak.stock_a_indicator_lg(symbol=symbol[2:])
             if df_indicator.empty:
                 logging.warning(f"No valuation data found for {symbol}")
                 return
+            if update_type == 'all':
+                pass 
+            elif update_type == 'daily':
+                start_date = pd.to_datetime(self.daily_start_date).date()
+                end_date = pd.to_datetime('today').date()
+                df_indicator = df_indicator[df_indicator['trade_date'].between(start_date, end_date)]
+            else:
+                raise ValueError("Invalid update_type")
             df_indicator['symbol'] = symbol
             df_indicator['trade_date'] = pd.to_datetime(df_indicator['trade_date'])
             df_indicator[['symbol', 'trade_date', 'pe', 'pe_ttm', 'pb', 'dv_ratio', 'dv_ttm', 'ps', 'ps_ttm', 'total_mv']].to_sql(
@@ -216,8 +261,8 @@ class FullFactorCalculator:
     def calculate_volatility(self, symbol, window=30):
         """计算波动率相关因子"""
         try:
-            stock_data = self.get_hist_data(symbol)
-            index_data = self.get_hist_data(self.index_symbol, type='index')
+            stock_data = self.symbol_hist_data.copy()
+            index_data = self.index_data 
             stock_data.rename(columns={'日期': 'date',
                     '开盘': 'open',
                     '收盘': 'close',
@@ -271,7 +316,9 @@ class FullFactorCalculator:
         """计算质量因子"""
         try:
             balance_df = ak.stock_financial_report_sina(stock=symbol, symbol="资产负债表")
+            time.sleep(30)
             income_df = ak.stock_financial_report_sina(stock=symbol, symbol="利润表")
+            time.sleep(30)
             cash_df = ak.stock_financial_report_sina(stock=symbol, symbol="现金流量表")
             
             if balance_df is None or income_df is None or cash_df is None:
@@ -342,10 +389,10 @@ class FullFactorCalculator:
         lower_band = moving_average - (2 * std_dev)
         return moving_average, upper_band, lower_band
 
-    def calculate_technical_indicators(self, symbol):
+    def calculate_technical_indicators(self, symbol, update_type='all'):
         """计算技术指标"""
         try:
-            df = self.get_hist_data(symbol)
+            df = self.symbol_hist_data.copy()
             if df is None:
                 logging.warning(f"No historical data for {symbol}")
                 return
@@ -395,6 +442,13 @@ class FullFactorCalculator:
             else:
                 df[volatility_cols] = np.nan
             cols += volatility_cols
+
+            if update_type == 'all':
+                pass 
+            elif update_type == 'daily':
+                start_date = pd.to_datetime(self.daily_start_date).date()
+                end_date = pd.to_datetime('today').date()
+                df = df[df['trade_date'].between(start_date, end_date)]
             df[cols].to_sql('stock_zh_a_hist', self.engine, if_exists='append', index=False)
         except Exception as e:
             logging.error(f"Technical indicator error for {symbol}: {str(e)}")
@@ -406,12 +460,16 @@ class FullFactorCalculator:
         stocks = self.get_all_stocks()
         
         for symbol in stocks:
+            if 'unknown' in symbol:
+                continue
+            time.sleep(30)
+            self.symbol_hist_data = self.get_hist_data(symbol)
             self._init_single_stock(symbol)
-            break
         
+        # TODO: 宏观及融资融券数据特征，后续考虑拆分出来单独使用
         # self._init_macro_data()
-        self._init_margin_data()
-        self.update_sector_indices()  # 新增：初始化行业指数数据
+        # self._init_margin_data()
+        # self.update_sector_indices()  # 新增：初始化行业指数数据
 
     def _init_single_stock(self, symbol):
         """单只股票历史数据初始化"""
