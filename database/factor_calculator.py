@@ -100,7 +100,7 @@ class FullFactorCalculator:
         spot_df['symbol'] = spot_df['代码'].apply(format_symbol)
         return spot_df['symbol'].tolist()
 
-    def get_hist_data(self, symbol, start_date=None, type='stock'):
+    def get_hist_data(self, symbol, start_date='19700101', type='stock'):
         """获取复权历史行情"""
         try: 
             if type != 'stock':
@@ -316,16 +316,16 @@ class FullFactorCalculator:
         """计算质量因子"""
         try:
             balance_df = ak.stock_financial_report_sina(stock=symbol, symbol="资产负债表")
-            time.sleep(30)
+            time.sleep(15)
             income_df = ak.stock_financial_report_sina(stock=symbol, symbol="利润表")
-            time.sleep(30)
+            time.sleep(10)
             cash_df = ak.stock_financial_report_sina(stock=symbol, symbol="现金流量表")
             
             if balance_df is None or income_df is None or cash_df is None:
                 logging.warning(f"No financial report data found for {symbol}")
                 return
             
-            debt_ratio = balance_df[['报告日', '负债合计', '资产总计']]
+            debt_ratio = balance_df[['报告日', '负债合计', '资产总计']].copy()
             if debt_ratio.empty:
                 logging.warning(f"No debt ratio data found for {symbol}")
                 return
@@ -453,16 +453,23 @@ class FullFactorCalculator:
         except Exception as e:
             logging.error(f"Technical indicator error for {symbol}: {str(e)}")
 
-    def initialize_hist_data(self):
+    def initialize_hist_data(self, force_clear=False):
         """初始化全量历史数据"""
-        self.clear()
+        if force_clear:
+            self.clear()
+    
+        # 获取数据库已有股票列表
+        existing_symbols = self.get_existing_symbols()
         
-        stocks = self.get_all_stocks()
-        
-        for symbol in stocks:
-            if 'unknown' in symbol:
-                continue
-            time.sleep(30)
+        # 获取全量股票并过滤
+        all_stocks = self.get_all_stocks()
+        new_stocks = [
+            s for s in all_stocks 
+            if s not in existing_symbols 
+            and 'unknown' not in s
+        ]
+        for symbol in new_stocks:
+            time.sleep(5)
             self.symbol_hist_data = self.get_hist_data(symbol)
             self._init_single_stock(symbol)
         
@@ -470,6 +477,16 @@ class FullFactorCalculator:
         # self._init_macro_data()
         # self._init_margin_data()
         # self.update_sector_indices()  # 新增：初始化行业指数数据
+    
+    def get_existing_symbols(self):
+        """获取数据库中已存在的股票代码列表"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("SELECT DISTINCT symbol FROM stock_zh_a_hist"))
+                return [row[0] for row in result.fetchall()]
+        except Exception as e:
+            logging.error(f"获取已有股票列表失败: {str(e)}")
+            return []
 
     def _init_single_stock(self, symbol):
         """单只股票历史数据初始化"""

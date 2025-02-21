@@ -1,233 +1,309 @@
-import numpy as np
-import pandas as pd
+from database.factor_calculator import FullFactorCalculator
+from backtrader.feeds import PandasData  # 新增导入
 import backtrader as bt
-from backtrader.feeds import PandasData
+import pandas as pd
+import numpy as np
+pd.set_option('future.no_silent_downcasting', True)
 
-# ======================== 数据预处理模块 ========================
-class FactorData(PandasData):
-    """
-    自定义数据加载类（扩展PandasData以支持多因子）
-    """
+class EnhancedFactorData(PandasData):
+    """增强版数据类支持全量因子"""
     lines = (
-        'price_change_percentage', 'macd', 'kdj_k',
-        'turnover_rate', 'ma_5', 'ma_20', 'hist_volatility_30d',
-        'beta_252d', 'atr_14d'
+        # 基础行情数据
+        'open', 'high', 'low', 'close', 'volume',
+        # 技术指标
+        'ma_5', 'ma_20', 'macd', 'kdj_k', 'rsi',
+        # 估值因子
+        'pe', 'pb', 
+        # 成长因子
+        'net_profit_growth',
+        # 风险指标
+        'hist_volatility_30d', 'beta_252d'
     )
+    
     params = (
         ('datetime', None),
-        ('open', -1), ('high', -1), ('low', -1), 
-        ('close', -1), ('volume', -1),
-        ('price_change_percentage', -1),
-        ('macd', -1),
-        ('kdj_k', -1),
-        ('turnover_rate', -1),
-        ('ma_5', -1),
-        ('ma_20', -1),
-        ('hist_volatility_30d', -1),
-        ('beta_252d', -1),
-        ('atr_14d', -1),
+        ('open', 'open'),
+        ('high', 'high'),
+        ('low', 'low'),
+        ('close', 'close'),
+        ('volume', 'volume'),
+        ('ma_5', 'ma_5'),
+        ('ma_20', 'ma_20'),
+        ('macd', 'macd'),
+        ('kdj_k', 'kdj_k'),
+        ('rsi', 'rsi'),
+        ('pe', 'pe'),
+        ('pb', 'pb'),
+        ('net_profit_growth', 'net_profit_growth'),
+        ('hist_volatility_30d', 'hist_volatility_30d'),
+        ('beta_252d', 'beta_252d')
     )
 
-def load_stock_data(symbol, start_date='2020-01-01', end_date='2023-12-31'):
-    """
-    示例数据生成函数（实际使用时替换为真实数据）
-    """
-    dates = pd.date_range(start=start_date, end=end_date)
-    n = len(dates)
-    df = pd.DataFrame({
-        'open': np.random.rand(n) * 100 + 100,
-        'high': np.random.rand(n) * 105 + 100,
-        'low': np.random.rand(n) * 95 + 100,
-        'close': np.random.rand(n) * 100 + 100,
-        'volume': np.random.randint(1e6, 1e7, size=n),
-        'price_change_percentage': np.random.uniform(-0.1, 0.1, n),
-        'macd': np.random.uniform(-2, 2, n),
-        'kdj_k': np.random.uniform(0, 100, n),
-        'turnover_rate': np.random.uniform(1, 10, n),
-        'ma_5': np.random.rand(n) * 100 + 100,
-        'ma_20': np.random.rand(n) * 100 + 100,
-        'hist_volatility_30d': np.random.uniform(0.1, 0.5, n),
-        'beta_252d': np.random.uniform(0.5, 1.5, n),
-        'atr_14d': np.random.uniform(1, 5, n),
-    }, index=dates)
-    return df
-
 # ======================== 策略逻辑模块 ========================
-class MultiFactorStrategy(bt.Strategy):
+class OptimizedMultiFactorStrategy(bt.Strategy):
     params = (
-        ('top_n', 10),          # 持仓股票数量
-        ('replace_n', 1),       # 每日替换数量
-        ('score_threshold', 0), # 新股票得分阈值
-        ('max_position_ratio', 0.15),  # 单股票最大仓位比例
-        ('print_log', True),    # 是否打印交易日志
+        ('position_size', 10),    # 持仓数量
+        ('max_daily_change', 2),  # 每日最大调仓数
+        ('position_ratio', 0.15), # 单股最大仓位比例
+        ('printlog', False)       # 是否打印交易日志
     )
 
     def __init__(self):
-        self.stock_scores = {}  # 存储每只股票的实时得分
-        self.order_dict = {}    # 跟踪订单
-        self.trade_count = 0    # 交易计数器
+        self.initial_portfolio = []  # 初始股票池
+        self.current_holdings = {}   # 当前持仓
+        self.trade_counter = 0       # 交易计数器
+        
+        # 初始化阶段计算全市场评分
+        if len(self.datas) == 1:  # 仅运行在第一个数据
+            all_scores = self.calculate_initial_scores()
+            self.initial_portfolio = sorted(
+                all_scores.items(), 
+                key=lambda x: x[1], 
+                reverse=True
+            )[:self.params.position_size]
 
-    def log(self, txt, dt=None):
-        """日志输出"""
-        if self.params.print_log:
-            dt = dt or self.datas[0].datetime.date(0)
-            print(f'{dt}, {txt}')
+    def calculate_initial_scores(self):
+        """初始化阶段全市场评分"""
+        scores = {}
+        for d in self.datas:
+            if len(d.close) > 20:  # 确保足够数据长度
+                try:
+                    scores[d._name] = self.factor_score(d)
+                except Exception as e:
+                    self.log(f"评分错误 {d._name}: {str(e)}")
+        return scores
 
-    def prenext(self):
-        self.next()
+    def factor_score(self, data):
+        """多因子综合评分"""
+        # 估值因子（越低越好）
+        value_score = 0.4 * (1 / data.pe[0]) + 0.6 * (1 / data.pb[0])
+        
+        # 成长因子（越高越好）
+        growth_score = 0.7 * data.net_profit_growth[0] 
+        
+        # 技术指标（动态权重）
+        tech_score = (
+            0.3 * data.rsi[0]/100 +
+            0.4 * (data.close[0] > data.ma_20[0]) +
+            0.3 * data.macd[0]
+        )
+        
+        # 风险调整（越低越好）
+        risk_penalty = 0.6 * data.hist_volatility_30d[0] + 0.4 * abs(data.beta_252d[0]-1)
+        
+        return (value_score * 0.35 + 
+                growth_score * 0.3 + 
+                tech_score * 0.25 - 
+                risk_penalty * 0.1)
 
     def next(self):
-        self.calculate_scores()
+        # 初始化阶段不交易
+        if len(self.datas[0]) < 2:
+            return
+            
+        # 每日调仓逻辑
         self.rebalance_portfolio()
-        self.log_positions()
-
-    def calculate_scores(self):
-        """计算每只股票的因子得分"""
-        self.stock_scores.clear()
-        for d in self.datas:
-            # 获取指标值
-            factors = {
-                'price_change': d.price_change_percentage[0],
-                'macd': d.macd[0],
-                'kdj_k': d.kdj_k[0],
-                'turnover': d.turnover_rate[0],
-                'ma5_gt_ma20': 1 if d.ma_5[0] > d.ma_20[0] else -1,
-                'volatility': d.hist_volatility_30d[0],
-                'beta': d.beta_252d[0],
-                'atr': d.atr_14d[0],
-            }
-            # 计算得分（示例公式）
-            score = (
-                0.25 * factors['price_change'] +
-                0.20 * factors['macd'] +
-                0.15 * factors['kdj_k'] +
-                0.10 * factors['turnover'] +
-                0.10 * factors['ma5_gt_ma20'] -
-                0.10 * factors['volatility'] -
-                0.05 * factors['beta'] -
-                0.05 * factors['atr']
-            )
-            self.stock_scores[d._name] = score
 
     def rebalance_portfolio(self):
-        """调仓逻辑"""
-        # 当前持仓
-        current_pos = {d: pos.size for d, pos in self.getpositions().items() if pos.size > 0}
+        current_pos = {d._name: d for d in self.getpositions()}
+        candidate_pool = self.get_candidates(current_pos)
         
-        # 卖出逻辑：卖出得分最低的replace_n只
-        sorted_stocks = sorted(self.stock_scores.items(), key=lambda x: x[1])
-        sell_candidates = [stock for stock, _ in sorted_stocks[:self.p.replace_n] if stock in current_pos]
+        # 卖出逻辑
+        sell_list = self.get_weakest_positions(current_pos)
+        for symbol in sell_list[:self.params.max_daily_change]:
+            self.close(current_pos[symbol])
+            self.log(f'卖出 {symbol}')
+            
+        # 买入逻辑
+        buy_power = self.broker.getcash() / self.params.max_daily_change
+        for symbol in candidate_pool[:self.params.max_daily_change]:
+            data = self.getdatabyname(symbol)
+            size = min(buy_power/data.close[0], 
+                      self.broker.getvalue()*self.params.position_ratio/data.close[0])
+            self.buy(data, size=size)
+            self.log(f'买入 {symbol} {size:.2f}股')
+
+    def get_candidates(self, current_pos):
+        """获取候选股票列表"""
+        scores = {}
+        for d in self.datas:
+            if d._name not in current_pos and len(d) > 20:
+                scores[d._name] = self.factor_score(d)
+        return sorted(scores.keys(), 
+                     key=lambda x: scores[x], 
+                     reverse=True)
+
+    def get_weakest_positions(self, current_pos):
+        """获取持仓中最差的股票"""
+        scores = {}
+        for symbol, pos in current_pos.items():
+            data = self.getdatabyname(symbol)
+            scores[symbol] = self.factor_score(data)
+        return sorted(scores.keys(), key=lambda x: scores[x])
+
+    def log(self, txt, dt=None):
+        """日志记录"""
+        if self.params.printlog:
+            dt = dt or self.datas[0].datetime.date(0)
+            print(f'{dt.isoformat()}, {txt}')
+
+    def stop(self):
+        print(f"总交易次数: {len(self._orders)}")
+        print(f"最终持仓数量: {len(self.getpositions())}")
+        # 在策略结束时验证交易记录
+        if len(self._orders) == 0:
+            print("警告：本次回测未产生任何交易！")
+            print("可能原因：")
+            print("- 初始评分未选出有效股票")
+            print("- 调仓条件未触发")
+            print("- 可用资金不足")
+
+# ======================== 数据加载模块 ========================        
+def load_factor_data(symbol, engine, start_date, end_date):
+    """从数据库加载多维度因子数据"""
+    query = f"""
+    SELECT 
+        h.trade_date,
+        h.open, h.high, h.low, h.close, h.volume,
+        h.ma_5, h.ma_20, h.macd, h.kdj_k, h.rsi,
+        v.pe, v.pb,
+        g.net_profit_growth,
+        h.hist_volatility_30d,
+        h.beta_252d
+    FROM stock_zh_a_hist h
+    LEFT JOIN valuation_factors v 
+        ON h.symbol = v.symbol AND h.trade_date = v.trade_date
+    LEFT JOIN (
+        SELECT 
+            symbol,
+            announcement_date as last_announce,
+            net_profit_growth,
+            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY announcement_date DESC) as rn
+        FROM growth_factors
+    ) g ON h.symbol = g.symbol 
+        AND h.trade_date >= g.last_announce
+        AND g.rn = 1  -- 取最新公告记录
+    WHERE h.symbol = '{symbol}'
+        AND h.trade_date BETWEEN '{start_date}' AND '{end_date}'
+    ORDER BY h.trade_date
+    """
+    df = pd.read_sql(query, engine)
+    
+    # ========== 新增关键处理 ==========
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+    df = df.set_index('trade_date').sort_index().asfreq('D')  # 确保每日频率
+    
+
+    # 标准化方法需要离线统一计算，以便在线预测时与回测时使用同样的标准化方法
+    # 处理缺失值
+    df['net_profit_growth'] = df['net_profit_growth'].ffill()
+    df['net_profit_growth'] = (
+    df['net_profit_growth']
+    .astype('float32')  # 明确指定数据类型
+    .ffill()
+    .fillna(0.5)
+)
+
+    # 数据标准化
+    numeric_cols = ['pe', 'pb', 'net_profit_growth', 'rsi', 'macd']
+    df[numeric_cols] = df[numeric_cols].apply(
+        lambda x: (x - x.mean()) / x.std()
+    )
+    if 'beta_252d' in df.columns:
+        # 先处理其他字段的缺失
+        other_cols = df.columns.difference(['beta_252d', 'net_profit_growth'])
+        df = df.dropna(subset=other_cols)
         
-        for stock in sell_candidates:
-            data = self.getdatabyname(stock)
-            self.close(data)
-            self.log(f'SELL {stock}, Price: {data.close[0]:.2f}')
-
-        # 可用资金
-        cash = self.broker.getcash()
-        buy_power = cash / self.p.replace_n if self.p.replace_n > 0 else 0
-        
-        # 买入逻辑：选择非持仓中得分高于阈值的股票
-        available_stocks = [s for s in self.stock_scores if s not in current_pos]
-        buy_candidates = sorted(
-            [(s, score) for s, score in self.stock_scores.items() 
-             if s in available_stocks and score > self.p.score_threshold],
-            key=lambda x: x[1], reverse=True
-        )[:self.p.replace_n]
-
-        for stock, score in buy_candidates:
-            data = self.getdatabyname(stock)
-            size = buy_power / data.close[0]
-            if size * data.close[0] > self.broker.getvalue() * self.p.max_position_ratio:
-                size = self.broker.getvalue() * self.p.max_position_ratio / data.close[0]
-            self.buy(data=data, size=size)
-            self.log(f'BUY {stock}, Price: {data.close[0]:.2f}, Size: {size:.2f}')
-
-    def log_positions(self):
-        """记录持仓"""
-        pos = self.getpositions()
-        pos_info = ', '.join([f'{d._name}: {p.size:.2f}' for d, p in pos.items()])
-        self.log(f'持仓: {pos_info}')
+        # 对beta_252d进行填充
+        df['beta_252d'] = (
+            df['beta_252d']
+            .astype('float32')
+            .fillna(0.5)
+            .clip(lower=-10, upper=10)  # 限制合理范围
+            .replace([np.inf, -np.inf], 0.5)
+        )
+    else:
+        df['beta_252d'] = 0.5  # 容错处理
+    return df
 
 # ======================== 回测执行模块 ========================
-def run_backtest(data_dict, strategy_params=None):
+def run_enhanced_backtest(symbol_list, start_date, end_date):
     cerebro = bt.Cerebro(stdstats=False)
     
+    # 初始化因子计算器
+    calculator = FullFactorCalculator()
+    
     # 添加数据
-    for symbol, df in data_dict.items():
-        data = FactorData(dataname=df, name=symbol)
-        cerebro.adddata(data)
+    for symbol in symbol_list:
+        df = load_factor_data(symbol, calculator.engine, start_date, end_date)
+        
+        if not df.empty:
+            print(f"加载数据 {symbol}, {df.shape}")
+            data = EnhancedFactorData(dataname=df, name=symbol)
+            cerebro.adddata(data)
     
-    # 添加策略
-    cerebro.addstrategy(MultiFactorStrategy, **strategy_params or {})
+    # 策略参数
+    cerebro.addstrategy(OptimizedMultiFactorStrategy)
     
-    # 设置初始资金
+    # 回测配置
     cerebro.broker.setcash(1_000_000)
-    cerebro.broker.setcommission(commission=0.001)  # 0.1%佣金
+    cerebro.broker.setcommission(commission=0.001)
+    cerebro.addsizer(bt.sizers.PercentSizer, percents=95)
     
-    # 添加分析器
+    # 分析器
+    cerebro.addanalyzer(bt.analyzers.PyFolio, _name='pyfolio')
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-    cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
     
     # 运行回测
     results = cerebro.run()
     return results[0]
 
-# ======================== 参数优化模块 ========================
-def optimize_strategy(data_dict, param_grid):
-    cerebro = bt.Cerebro(optreturn=False)
+# ======================== 结果分析模块 ========================
+def analyze_results(result):
+    """专业级结果分析"""
+    pyfoliozer = result.analyzers.getbyname('pyfolio')
+    # 修改为接收4个返回值
+    returns, positions, transactions, gross_lev = pyfoliozer.get_pf_items()
     
-    # 添加数据
-    for symbol, df in data_dict.items():
-        data = FactorData(dataname=df, name=symbol)
-        cerebro.adddata(data)
+    sharpe_analyzer = result.analyzers.sharpe.get_analysis()
+    sharpe_ratio = sharpe_analyzer.get('sharperatio', None)
+    if sharpe_ratio is None:
+        print("夏普比率计算失败，可能原因：")
+        print("- 回测时间不足1年")
+        print("- 未产生任何交易")
+        print("- 所有收益率为零")
+        sharpe_ratio = 0.0  # 设置默认值
     
-    # 参数网格
-    cerebro.optstrategy(
-        MultiFactorStrategy,
-        top_n=param_grid.get('top_n', [10]),
-        replace_n=param_grid.get('replace_n', [1]),
-        score_threshold=param_grid.get('score_threshold', [0]),
-    )
-    
-    # 分析器
-    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-    
-    # 运行优化
-    opt_results = cerebro.run(maxcpus=1)
-    
-    # 提取最佳参数
-    best_sharpe = -np.inf
-    best_params = None
-    for result in opt_results:
-        sharpe = result.analyzers.sharpe.get_analysis()['sharperatio']
-        if sharpe > best_sharpe:
-            best_sharpe = sharpe
-            best_params = result.params._getkwargs()
-    return best_params, best_sharpe
+    print("\n========== 高级分析报告 ==========")
+    print(f"夏普比率: {sharpe_ratio:.2f}" if sharpe_ratio is not None else "夏普比率: 无效")
+    print(f"杠杆率数据样例：{gross_lev[:5]}")
 
+    # 生成可视化报告（增加杠杆率参数）
+    import pyfolio as pf
+    pf.create_full_tear_sheet(
+        returns,
+        positions=positions,
+        transactions=transactions,
+        live_start_date='2023-06-01'
+    )
+        # 可选：单独分析杠杆率
+    if not gross_lev.empty:
+        print("\n杠杆率分析:")
+        print(gross_lev.describe())
 
 if __name__ == '__main__':
-    # 1. 生成示例数据（10只股票）
-    symbols = [f'Stock_{i}' for i in range(1, 11)]
-    data_dict = {s: load_stock_data(s) for s in symbols}
+    # 初始化因子数据库
+    factor_calculator = FullFactorCalculator()
     
-    # 2. 参数优化
-    param_grid = {
-        'top_n': [8, 10, 12],
-        'replace_n': [1, 2],
-        'score_threshold': [-0.5, 0, 0.5],
-    }
-    best_params, best_sharpe = optimize_strategy(data_dict, param_grid)
-    print(f'最佳参数: {best_params}, 夏普比率: {best_sharpe:.2f}')
+    # 获取全市场股票
+    all_symbols = factor_calculator.get_all_stocks()[:270]  # 前200只测试
     
-    # 3. 使用最佳参数运行回测
-    result = run_backtest(data_dict, best_params)
+    # 运行增强版回测
+    result = run_enhanced_backtest(
+        symbol_list=all_symbols,
+        start_date='2020-01-01',
+        end_date='2023-12-31'
+    )
     
-    # 4. 输出回测结果
-    print('\n========== 回测结果 ==========')
-    print(f"夏普比率: {result.analyzers.sharpe.get_analysis()['sharperatio']:.2f}")
-    print(f"最大回撤: {result.analyzers.drawdown.get_analysis()['max']['drawdown']:.2f}%")
-    print(f"年化收益: {result.analyzers.returns.get_analysis()['rnorm100']:.2f}%")
+    # 生成分析报告
+    analyze_results(result)
